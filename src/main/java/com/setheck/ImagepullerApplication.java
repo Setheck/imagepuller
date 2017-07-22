@@ -1,5 +1,15 @@
 package com.setheck;
 
+import com.setheck.cmd.CliOptionHandler;
+import com.setheck.nio.FileSaver;
+import com.setheck.parse.RssFeedParser;
+import com.setheck.retrieve.LinkRetriever;
+import com.setheck.retrieve.RetrievedFile;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.file.Paths;
+import java.util.Map;
+import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.Banner;
@@ -7,21 +17,13 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-import javax.annotation.Resource;
-import java.io.ByteArrayInputStream;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-
 @SpringBootApplication
 public class ImagepullerApplication implements CommandLineRunner {
 
-	private static final Logger log = LoggerFactory.getLogger(ImagepullerApplication.class);
+	private static final Logger LOG = LoggerFactory.getLogger(ImagepullerApplication.class);
 
-	@Resource
-	private CliOptionHandler cliOptionHandler;
-
-	@Resource
-	private RssFeedParser rssFeedParser;
+	private final CliOptionHandler cliOptionHandler = new CliOptionHandler();
+	private RssFeedParser rssFeedParser = new RssFeedParser();
 
 	public static void main(String[] args) {
 		SpringApplication springApplication = new SpringApplication(ImagepullerApplication.class);
@@ -31,47 +33,53 @@ public class ImagepullerApplication implements CommandLineRunner {
 	}
 
 	@Override
-	public void run(String... args) throws Exception
+	public void run(String... args)
 	{
 		//Parse cmd options
-		if (!cliOptionHandler.parseArgs(args))
+		Map<String,String> parsedArgs = cliOptionHandler.parseArgs(args);
+		if (parsedArgs.containsKey("h"))
 		{
+			cliOptionHandler.buildHelpFormatter();
 			return;
 		}
 
-		String rssFeed = "";
+		String feedUrl = parsedArgs.getOrDefault("f", "");
+		String path = parsedArgs.getOrDefault("p", "");
+
+		if (!Paths.get(path).toFile().exists())
+		{
+			LOG.info("Path '{}' does not exist, aborting.", path);
+			return;
+		}
+
 		//If feed was set, retrieve feed content.
-		if (!cliOptionHandler.getFeed().isEmpty())
-		{
-			rssFeed = LinkRetriever.getLink(cliOptionHandler.getFeed());
-		}
+		String rssFeed = LinkRetriever.getLink(feedUrl);
 
-		//If path was set, ensure that it exists.
-		if (!cliOptionHandler.getPath().isEmpty())
+		if (StringUtils.isNotEmpty(rssFeed) && StringUtils.isNotEmpty(path))
 		{
-			if (!Files.exists(Paths.get(cliOptionHandler.getPath())))
+			InputStream byteArrayInputStream = new ByteArrayInputStream(rssFeed.getBytes());
+
+			FileSaver fileSaver = new FileSaver(path);
+
+			int limit = 0;
+			try
 			{
-				log.warn("Target path does not exist, aborting.");
-				return;
+				limit = Integer.parseInt(parsedArgs.getOrDefault("l", "0"));
 			}
-		}
+			catch(NumberFormatException nfe)
+			{
+				LOG.info("Invalid Limit, defaulting to 0");
+			}
 
-		if (cliOptionHandler.getLimit() > 0)
+			rssFeedParser.parseFeed(byteArrayInputStream, limit)
+				.parallelStream()
+				.map(LinkRetriever::getFile)
+				.filter(RetrievedFile::notNull)
+				.forEach(fileSaver::saveFile);
+		}
+		else
 		{
-			rssFeedParser.setLinkLimit(cliOptionHandler.getLimit());
+			LOG.info("Valid feed and path are required.");
 		}
-
-		ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(rssFeed.getBytes());
-
-		//InputStream inputStream = ClassLoader.getSystemResourceAsStream("example-feed.xml");
-		FileSaver fileSaver = new FileSaver(cliOptionHandler.getPath());
-
-		rssFeedParser.parseFeed(byteArrayInputStream)
-			.stream()
-			.map(LinkRetriever::getFile)
-			.filter(RetrievedFile::notNull)
-			.forEach(fileSaver::saveFile);
-
-
 	}
 }
